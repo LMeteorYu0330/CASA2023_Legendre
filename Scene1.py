@@ -30,12 +30,19 @@ curl_strength = 0
 time_c = 2
 maxfps = 60
 dye_decay = 1 - 1 / (maxfps * time_c)
-force_radius = res / 4.0
+force_radius = res / 12
 gravity = True
 debug = False
 paused = False
+# x_len = 1
+# y_len = 1
+# z_len = 1
+# domain_length = 1
+# dx = 1/res
 
-ti.init(arch=ti.gpu)
+
+ti.init(arch=ti.gpu, device_memory_fraction=0.9)
+# ti.init(device_memory_GB=4)
 print('Using jacobi iteration')
 
 _velocities = ti.Vector.field(3, float, shape=(res, res, res))
@@ -48,8 +55,8 @@ _dye_buffer = ti.Vector.field(3, float, shape=(res, res, res))
 _new_dye_buffer = ti.Vector.field(3, float, shape=(res, res, res))
 _density_color = ti.field(float, shape=(res, res, res))
 
-src = ti.Vector([res / 4, res / 4, res / 4])
-dir = ti.Vector([1 / ti.sqrt(3), 1 / ti.sqrt(3), 1 / ti.sqrt(3)])
+src = ti.Vector([res / 2, 5, 5])
+dir = ti.Vector([0, 1, 0])
 
 
 class TexPair:
@@ -126,10 +133,10 @@ def advect(vf: ti.template(), qf: ti.template(), new_qf: ti.template()):
 
 @ti.kernel
 def apply_impulse(vf: ti.template(), dyef: ti.template()):
-    g_dir = -ti.Vector([0, 0, 9.8])
+    g_dir = -ti.Vector([0, 0, -9.8]) * 300
     for i, j, k in vf:
-        omx, omy, omz = ti.Vector([res / 6, res / 6, res / 6])
-        mdir = ti.Vector([1 / ti.sqrt(3), 1/ ti.sqrt(3), 1.2 / ti.sqrt(3)])
+        omx, omy, omz = src
+        mdir = dir
         dx, dy, dz = (i + 0.5 - omx), (j + 0.5 - omy), (k + 0.5 - omz)
         d2 = dx * dx + dy * dy + dz * dz
         # dv = F * dt
@@ -170,9 +177,10 @@ def divergence(vf: ti.template()):
         if j == res - 1:
             vt.y = -vc.y
         if k == 0:
-            vzb.z = -vzb.z
+            vzb.z = -vc.z
         if k == res - 1:
-            vzf.z = -vzf.z
+            vzf.z = -vc.z
+
         velocity_divs[i, j, k] = (vr.x - vl.x + vt.y - vb.y + vzf.z - vzb.z) * 0.5
 
 

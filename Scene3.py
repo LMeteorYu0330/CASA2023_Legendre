@@ -1,10 +1,9 @@
-
 ## Scene 1
 
 import argparse
 import vedo
 import numpy as np
-from vedo import Volume, show, Plotter
+from vedo import Mesh, Volume, show, Plotter
 from vedo.applications import RayCastPlotter
 
 import taichi as ti
@@ -51,11 +50,20 @@ _new_pressures = ti.field(float, shape=(res, res, res))
 _dye_buffer = ti.Vector.field(3, float, shape=(res, res, res))
 _new_dye_buffer = ti.Vector.field(3, float, shape=(res, res, res))
 _density_color = ti.field(float, shape=(res, res, res))
+bunny_sdf = ti.field(float, shape=(res, res, res))
 
-src = ti.Vector([res / 2, res / 2, res / 8])
-dir = ti.Vector([0, 0, 1])
-sphere_center = ti.Vector([res / 2, res / 2 - 5, res / 4])
-sphere_radius = res /8
+src = ti.Vector([res / 2, 5, 5])
+dir = ti.Vector([0, 1, 0])
+
+mesh = Mesh("bunny_lowpoly.obj").subdivide()
+vol = mesh.signed_distance(dims=(res, res, res))
+np_bunny = vol.tonumpy()
+bunny_sdf.from_numpy(np_bunny)
+# print(bunny_sdf[32, 32, 32])
+
+np_bunny = np.where(np_bunny >= 0, 0, 1)
+vxl = Volume(np_bunny, mode=0)
+#show(vxl, __doc__, axes=1).close()
 
 
 class TexPair:
@@ -132,7 +140,7 @@ def advect(vf: ti.template(), qf: ti.template(), new_qf: ti.template()):
 
 @ti.kernel
 def apply_impulse(vf: ti.template(), dyef: ti.template()):
-    g_dir = -ti.Vector([0, 0, -9.8])*300
+    g_dir = -ti.Vector([0, 0, -9.8]) * 300
     for i, j, k in vf:
         omx, omy, omz = src
         mdir = dir
@@ -155,6 +163,13 @@ def apply_impulse(vf: ti.template(), dyef: ti.template()):
 
         dyef[i, j, k] = dc
         _density_color[i, j, k] = dc[0]
+
+        if i < 16 or i >= 48: continue
+        if j < 16 or j >= 48: continue
+        if k < 16 or k >= 48: continue
+
+        if bunny_sdf[2 * (i - 16), 2 * (j - 16), 2 * (k - 16)] < 0:
+            _density_color[i, j, k] = 20
 
 
 @ti.kernel
@@ -224,26 +239,13 @@ def apply_pressure(p_in: ti.types.ndarray(), p_out: ti.template()):
 @ti.kernel
 def apply_boundary_condition(vf: ti.template(), df: ti.template()):
     for i, j, k in vf:
-        # vl = sample(vf, i - 1, j, k)
-        # vr = sample(vf, i + 1, j, k)
-        # vb = sample(vf, i, j - 1, k)
-        # vt = sample(vf, i, j + 1, k)
-        # vc = sample(vf, i, j, k)
-        # vzf = sample(vf, i, j, k + 1)
-        # vzb = sample(vf, i, j, k - 1)
-        norm = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center).norm()
-        dir = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center) / norm
-        if norm < sphere_radius:
+        if i < 16 or i >= 48: continue
+        if j < 16 or j >= 48: continue
+        if k < 16 or k >= 48: continue
+
+        if bunny_sdf[2 * (i - 16), 2 * (j - 16), 2 * (k - 16)] < 0:
             vf[i, j, k] = ti.Vector([0, 0, 0])
             df[i, j, k] = ti.Vector([0, 0, 0])
-        # if (ti.Vector([i - 0.5, j + 0.5, k + 0.5]) - sphere_center).norm() < sphere_radius:
-        #     vf[i, j, k] = - vf[i, j, k]
-
-        # if (ti.Vector([i - 0.5, j + 0.5, k + 0.5]) - sphere_center).norm() < sphere_radius:
-        #     vf[i, j, k].x = - vf[i, j, k].x
-        #
-        # if (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center).norm() < sphere_radius:
-        #     vf[i, j, k].y = - vf[i, j, k].y
 
 
 def solve_pressure_jacobi():
@@ -266,7 +268,7 @@ def step():
 
     solve_pressure_jacobi()
     subtract_gradient(velocities_pair.cur, pressures_pair.cur)
-    apply_boundary_condition(velocities_pair.cur,dyes_pair.cur)
+    apply_boundary_condition(velocities_pair.cur, dyes_pair.cur)
 
 
 def reset():

@@ -1,4 +1,3 @@
-
 ## Scene 2
 
 import argparse
@@ -54,8 +53,8 @@ _density_color = ti.field(float, shape=(res, res, res))
 
 src = ti.Vector([res / 2, res / 2, res / 16])
 dir = ti.Vector([0, 0, 1])
-sphere_center = ti.Vector([res / 2, res / 2 , res / 2])
-sphere_radius = res /6
+sphere_center = ti.Vector([res / 2, res / 2, res / 2])
+sphere_radius = res / 4
 
 
 class TexPair:
@@ -132,7 +131,7 @@ def advect(vf: ti.template(), qf: ti.template(), new_qf: ti.template()):
 
 @ti.kernel
 def apply_impulse(vf: ti.template(), dyef: ti.template()):
-    g_dir = -ti.Vector([0, 0, -9.8])*300
+    g_dir = -ti.Vector([0, 0, -9.8]) * 300
     for i, j, k in vf:
         omx, omy, omz = src
         mdir = dir
@@ -232,7 +231,6 @@ def apply_boundary_condition(vf: ti.template(), df: ti.template()):
             df[i, j, k] = ti.Vector([0, 0, 0])
 
 
-
 def solve_pressure_jacobi():
     for _ in range(p_jacobi_iters):
         pressure_jacobi(pressures_pair.cur, pressures_pair.nxt)
@@ -253,7 +251,7 @@ def step():
 
     solve_pressure_jacobi()
     subtract_gradient(velocities_pair.cur, pressures_pair.cur)
-    apply_boundary_condition(velocities_pair.cur,dyes_pair.cur)
+    apply_boundary_condition(velocities_pair.cur, dyes_pair.cur)
 
 
 def reset():

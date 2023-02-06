@@ -46,7 +46,7 @@ inline __host__ __device__ int IDX_r(int x, int y, int z) { return z + res * (y 
 
 static float *d_legendre;
 static float *d_elements, *d_Ppq, *d_advect_legendre_terms;
-static float *d_a, *d_b, *d_c;
+static float *d_a, *d_b, *d_c; 
 static float *d_a2, *d_b2, *d_c2;
 static float *d_velocity_x, *d_velocity_y, *d_velocity_z;
 static float *d_node_velocity_x, *d_node_velocity_y, *d_node_velocity_z;

@@ -154,6 +154,10 @@ def apply_impulse(vf: ti.template(), dyef: ti.template()):
 
         dyef[i, j, k] = dc
         _density_color[i, j, k] = dc[0]
+        norm = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center).norm()
+        dir = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center) / norm
+        if norm < sphere_radius:
+            _density_color[i, j, k] = 5
 
 
 @ti.kernel
@@ -192,7 +196,13 @@ def pressure_jacobi(pf: ti.template(), new_pf: ti.template()):
         pzf = sample(pf, i, j, k + 1)
         pzb = sample(pf, i, j, k - 1)
         div = velocity_divs[i, j, k]
-        new_pf[i, j, k] = (pl + pr + pb + pt + pzf + pzb - div) * (1 / 6)
+        #
+        norm = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center).norm()
+        dir = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center) / norm
+        if norm > sphere_radius:
+            new_pf[i, j, k] = (pl + pr + pb + pt + pzf + pzb - div) * (1 / 6)
+
+
         # print(new_pf[i, j, k], velocity_divs[i, j, k])
 
 
@@ -220,15 +230,15 @@ def apply_pressure(p_in: ti.types.ndarray(), p_out: ti.template()):
         p_out[I] = p_in[I[0] * res + I[1]]
 
 
-@ti.kernel
-def apply_boundary_condition(vf: ti.template(), df: ti.template()):
-    for i, j, k in vf:
-
-        norm = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center).norm()
-        dir = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center) / norm
-        if norm < sphere_radius:
-            vf[i, j, k] = ti.Vector([0, 0, 0])
-            df[i, j, k] = ti.Vector([0, 0, 0])
+# @ti.kernel
+# def apply_boundary_condition(vf: ti.template(), df: ti.template()):
+#     for i, j, k in vf:
+#
+#         norm = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center).norm()
+#         dir = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center) / norm
+#         if norm < sphere_radius:
+#             vf[i, j, k] = ti.Vector([0, 0, 0])
+#             df[i, j, k] = ti.Vector([0, 0, 0])
 
 
 def solve_pressure_jacobi():
@@ -251,7 +261,7 @@ def step():
 
     solve_pressure_jacobi()
     subtract_gradient(velocities_pair.cur, pressures_pair.cur)
-    apply_boundary_condition(velocities_pair.cur, dyes_pair.cur)
+    # apply_boundary_condition(velocities_pair.cur, dyes_pair.cur)
 
 
 def reset():

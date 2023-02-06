@@ -40,10 +40,28 @@ paused = False
 # domain_length = 1
 # dx = 1/res
 
+legendre_n = 20
+legendre_x_res = 64
+legendre_dx = 2. / legendre_x_res
+legendre_fit_iter = 80
+legendre_fit_learning_rate = 0.1
 
 ti.init(arch=ti.gpu, device_memory_fraction=0.9)
 # ti.init(device_memory_GB=4)
 print('Using jacobi iteration')
+
+legendre_table = ti.field(float, shape=(legendre_n, legendre_x_res + 1))
+alpha_x = ti.field(float, shape=(legendre_n, legendre_n, legendre_n))
+alpha_y = ti.field(float, shape=(legendre_n, legendre_n, legendre_n))
+alpha_z = ti.field(float, shape=(legendre_n, legendre_n, legendre_n))
+
+vel_diff_x = ti.field(float, shape=(res, res, res))
+vel_diff_y = ti.field(float, shape=(res, res, res))
+vel_diff_z = ti.field(float, shape=(res, res, res))
+
+grad_alpha_x = ti.field(float, shape=(legendre_n, legendre_n, legendre_n))
+grad_alpha_y = ti.field(float, shape=(legendre_n, legendre_n, legendre_n))
+grad_alpha_z = ti.field(float, shape=(legendre_n, legendre_n, legendre_n))
 
 _velocities = ti.Vector.field(3, float, shape=(res, res, res))
 _new_velocities = ti.Vector.field(3, float, shape=(res, res, res))
@@ -222,6 +240,62 @@ def apply_pressure(p_in: ti.types.ndarray(), p_out: ti.template()):
         p_out[I] = p_in[I[0] * res + I[1]]
 
 
+
+@ti.kernel
+def fitting_alpha():
+    for i, j, k in velocities_pair.cur:
+        ux, uy, uz = velocities_pair.cur[i, j, k]
+        vel_x = 0.0
+        vel_y = 0.0
+        vel_z = 0.0
+        for m in range(legendre_n):
+            Px = legendre_table[m, int(i / res)]
+            for n in range(legendre_n):
+                PxPy = Px * legendre_table[n, int(j / res)]
+                for o in range(legendre_n):
+                    PxPyPz = PxPy * legendre_table[o, int(k / res)]
+                    vel_x += alpha_x[m, n, o] * PxPyPz
+                    vel_y += alpha_y[m, n, o] * PxPyPz
+                    vel_z += alpha_z[m, n, o] * PxPyPz
+        vel_diff_x[i, j, k] = ux - vel_x
+        vel_diff_y[i, j, k] = uy - vel_y
+        vel_diff_z[i, j, k] = uz - vel_z
+
+    for m in range(legendre_n):
+        for n in range(legendre_n):
+            for o in range(legendre_n):
+                m_step = 0.0
+                n_step = 0.0
+                o_step = 0.0
+                for i in range(res):
+                    Px = legendre_table[m, int(i / res)]
+                    for j in range(res):
+                        PxPy = Px * legendre_table[n, int(j / res)]
+                        for k in range(res):
+                            PxPyPz = PxPy * legendre_table[o, int(k / res)]
+
+                            m_step += PxPyPz * vel_diff_x[i, j, k]
+                            n_step += PxPyPz * vel_diff_y[i, j, k]
+                            o_step += PxPyPz * vel_diff_z[i, j, k]
+
+                alpha_x[m, n, o] -= legendre_fit_learning_rate * m_step
+                alpha_y[m, n, o] -= legendre_fit_learning_rate * n_step
+                alpha_z[m, n, o] -= legendre_fit_learning_rate * o_step
+
+
+def calculateLegendrePolynomial():
+    for n in range(legendre_n):
+        for x in range(legendre_x_res + 1):
+            x_ = -1 + x * legendre_dx
+            if n == 0:
+                legendre_table[n, x] = 1
+            elif n == 1:
+                legendre_table[n, x] = x_
+            else:
+                legendre_table[n, x] = ((2 * n - 1) * x_ * legendre_table[n - 1, x] - (n - 1) * legendre_table[
+                    n - 2, x]) / n
+
+
 def solve_pressure_jacobi():
     for _ in range(p_jacobi_iters):
         pressure_jacobi(pressures_pair.cur, pressures_pair.nxt)
@@ -247,6 +321,13 @@ def step():
 def reset():
     velocities_pair.cur.fill(0)
     pressures_pair.cur.fill(0)
+    alpha_x.fill(0)
+    alpha_y.fill(0)
+    alpha_z.fill(0)
+    grad_alpha_x.fill(0)
+    grad_alpha_y.fill(0)
+    grad_alpha_z.fill(0)
+    legendre_table.fill(0)
     dyes_pair.cur.fill(0)
     _density_color.fill(0)
 
@@ -267,9 +348,17 @@ def on_key_press(evt):
 
 reset()
 vol = Volume(np.zeros_like(_density_color.to_numpy())).mode(0).c('cool').alpha(0.02)  # change properties
-plt = RayCastPlotter(vol, bg='white', bg2='blackboard', axes=7)  # Plotter instance
-plt.add_callback("KeyPress", on_key_press)
-fillnumpy()
+# plt = RayCastPlotter(vol, bg='white', bg2='blackboard', axes=7)  # Plotter instance
+# plt.add_callback("KeyPress", on_key_press)
+# fillnumpy()
+#
+# plt.show(viewup="z")
+# plt.interactive().close()
+calculateLegendrePolynomial()
+print(legendre_table.to_numpy())
+step()
+print("step finished")
+for iter in range(legendre_fit_iter):
+    fitting_alpha()
 
-plt.show(viewup="z")
-plt.interactive().close()
+print("alpha finished")

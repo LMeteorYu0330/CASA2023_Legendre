@@ -40,12 +40,12 @@ paused = False
 # domain_length = 1
 # dx = 1/res
 
-legendre_n = 20
+legendre_n = 32
 legendre_x_res = 64
 legendre_dx = 2. / legendre_x_res
-legendre_fit_iter = 80
-legendre_fit_learning_rate = 0.1
-
+legendre_fit_iter = 500
+legendre_fit_learning_rate = 7e-6
+is_first_step = True
 ti.init(arch=ti.gpu, device_memory_fraction=0.9)
 # ti.init(device_memory_GB=4)
 print('Using jacobi iteration')
@@ -240,7 +240,6 @@ def apply_pressure(p_in: ti.types.ndarray(), p_out: ti.template()):
         p_out[I] = p_in[I[0] * res + I[1]]
 
 
-
 @ti.kernel
 def fitting_alpha():
     for i, j, k in velocities_pair.cur:
@@ -248,39 +247,77 @@ def fitting_alpha():
         vel_x = 0.0
         vel_y = 0.0
         vel_z = 0.0
-        for m in range(legendre_n):
-            Px = legendre_table[m, int(i / res)]
-            for n in range(legendre_n):
-                PxPy = Px * legendre_table[n, int(j / res)]
-                for o in range(legendre_n):
-                    PxPyPz = PxPy * legendre_table[o, int(k / res)]
-                    vel_x += alpha_x[m, n, o] * PxPyPz
-                    vel_y += alpha_y[m, n, o] * PxPyPz
-                    vel_z += alpha_z[m, n, o] * PxPyPz
+        for m, n, o in ti.ndrange(legendre_n, legendre_n, legendre_n):
+            PxPyPz = legendre_table[m, i] * legendre_table[n, j] * legendre_table[o, k]
+            vel_x += alpha_x[m, n, o] * PxPyPz
+            vel_y += alpha_y[m, n, o] * PxPyPz
+            vel_z += alpha_z[m, n, o] * PxPyPz
+
         vel_diff_x[i, j, k] = ux - vel_x
         vel_diff_y[i, j, k] = uy - vel_y
         vel_diff_z[i, j, k] = uz - vel_z
 
-    for m in range(legendre_n):
-        for n in range(legendre_n):
-            for o in range(legendre_n):
-                m_step = 0.0
-                n_step = 0.0
-                o_step = 0.0
-                for i in range(res):
-                    Px = legendre_table[m, int(i / res)]
-                    for j in range(res):
-                        PxPy = Px * legendre_table[n, int(j / res)]
-                        for k in range(res):
-                            PxPyPz = PxPy * legendre_table[o, int(k / res)]
+    for m, n, o in ti.ndrange(legendre_n, legendre_n, legendre_n):
+        m_step = 0.0
+        n_step = 0.0
+        o_step = 0.0
+        for i, j, k in ti.ndrange(res, res, res):
+            PxPyPz = legendre_table[m, i] * legendre_table[n, j] * legendre_table[o, k]
+            m_step += PxPyPz * vel_diff_x[i, j, k]
+            n_step += PxPyPz * vel_diff_y[i, j, k]
+            o_step += PxPyPz * vel_diff_z[i, j, k]
 
-                            m_step += PxPyPz * vel_diff_x[i, j, k]
-                            n_step += PxPyPz * vel_diff_y[i, j, k]
-                            o_step += PxPyPz * vel_diff_z[i, j, k]
+        alpha_x[m, n, o] += legendre_fit_learning_rate * m_step
+        alpha_y[m, n, o] += legendre_fit_learning_rate * n_step
+        alpha_z[m, n, o] += legendre_fit_learning_rate * o_step
 
-                alpha_x[m, n, o] -= legendre_fit_learning_rate * m_step
-                alpha_y[m, n, o] -= legendre_fit_learning_rate * n_step
-                alpha_z[m, n, o] -= legendre_fit_learning_rate * o_step
+
+@ti.kernel
+def calculateRMS() -> ti.float32:
+    rms = 0.0
+
+    for i, j, k in velocities_pair.cur:
+        ux, uy, uz = velocities_pair.cur[i, j, k]
+        u_prime_x = 0.0
+        u_prime_y = 0.0
+        u_prime_z = 0.0
+        for m, n, o in ti.ndrange(legendre_n, legendre_n, legendre_n):
+            PxPyPz = legendre_table[m, i] * legendre_table[n, j] * legendre_table[o, k]
+            u_prime_x += alpha_x[m, n, o] * PxPyPz
+            u_prime_y += alpha_y[m, n, o] * PxPyPz
+            u_prime_z += alpha_z[m, n, o] * PxPyPz
+        rms += (ux - u_prime_x) ** 2 + (uy - u_prime_y) ** 2 + (uz - u_prime_z) ** 2
+
+    return ti.sqrt(rms / (res ** 3))
+
+
+@ti.kernel
+def printu_u_prime():
+    for i, j, k in velocities_pair.cur:
+        ux, uy, uz = velocities_pair.cur[i, j, k]
+        u_prime_x = 0.0
+        u_prime_y = 0.0
+        u_prime_z = 0.0
+        for m, n, o in ti.ndrange(legendre_n, legendre_n, legendre_n):
+            PxPyPz = legendre_table[m, i] * legendre_table[n, j] * legendre_table[o, k]
+            u_prime_x += alpha_x[m, n, o] * PxPyPz
+            u_prime_y += alpha_y[m, n, o] * PxPyPz
+            u_prime_z += alpha_z[m, n, o] * PxPyPz
+        print("u: ", ux, uy, uz, "u_prime: ", u_prime_x, u_prime_y, u_prime_z)
+
+
+# @ti.kernel
+# def replace_velocity_field():
+#     for i, j, k in velocities_pair.cur:
+#         u_prime_x = 0.0
+#         u_prime_y = 0.0
+#         u_prime_z = 0.0
+#         for m, n, o in ti.ndrange(legendre_n, legendre_n, legendre_n):
+#             PxPyPz = legendre_table[m, i] * legendre_table[n, j] * legendre_table[o, k]
+#             u_prime_x += alpha_x[m, n, o] * PxPyPz
+#             u_prime_y += alpha_y[m, n, o] * PxPyPz
+#             u_prime_z += alpha_z[m, n, o] * PxPyPz
+#         velocities_pair.cur[i, j, k] = ti.Vector([u_prime_x, u_prime_y, u_prime_z])
 
 
 def calculateLegendrePolynomial():
@@ -303,6 +340,8 @@ def solve_pressure_jacobi():
 
 
 def step():
+
+    # replace_velocity_field()
     advect(velocities_pair.cur, velocities_pair.cur, velocities_pair.nxt)
     advect(velocities_pair.cur, dyes_pair.cur, dyes_pair.nxt)
 
@@ -316,6 +355,11 @@ def step():
 
     solve_pressure_jacobi()
     subtract_gradient(velocities_pair.cur, pressures_pair.cur)
+    global is_first_step
+    global legendre_fit_iter
+    if is_first_step:
+        legendre_fit_iter = 10
+        is_first_step = False
 
 
 def reset():
@@ -344,21 +388,20 @@ def on_key_press(evt):
     step()
     ti.sync()
     fillnumpy()
+    for iter in range(legendre_fit_iter):
+        fitting_alpha()
 
 
 reset()
-vol = Volume(np.zeros_like(_density_color.to_numpy())).mode(0).c('cool').alpha(0.02)  # change properties
-# plt = RayCastPlotter(vol, bg='white', bg2='blackboard', axes=7)  # Plotter instance
-# plt.add_callback("KeyPress", on_key_press)
-# fillnumpy()
-#
-# plt.show(viewup="z")
-# plt.interactive().close()
 calculateLegendrePolynomial()
-print(legendre_table.to_numpy())
-step()
-print("step finished")
-for iter in range(legendre_fit_iter):
-    fitting_alpha()
+vol = Volume(np.zeros_like(_density_color.to_numpy())).mode(0).c('cool').alpha(0.02)  # change properties
+plt = RayCastPlotter(vol, bg='white', bg2='blackboard', axes=7)  # Plotter instance
+plt.add_callback("KeyPress", on_key_press)
+fillnumpy()
+
+plt.show(viewup="z")
+plt.interactive().close()
 
 print("alpha finished")
+printu_u_prime()
+print(calculateRMS())

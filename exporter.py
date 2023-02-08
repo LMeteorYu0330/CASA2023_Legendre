@@ -1,7 +1,8 @@
 import numpy as np
 import struct
 
-def makeVol(res, ndarray,filename) :
+
+def makeVol(res, ndarray, filename):
     # res = 64
     # test = np.random.random((res, res, res, 1)).astype(np.float32)
 

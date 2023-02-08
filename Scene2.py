@@ -7,7 +7,7 @@ from vedo import Volume, show, Plotter
 from vedo.applications import RayCastPlotter
 
 import taichi as ti
-
+import exporter
 # How to run:
 #   `python stable_fluid.py`: use the jacobi iteration to solve the linear system.
 #   `python stable_fluid.py -S`: use a sparse matrix to do so.
@@ -51,8 +51,8 @@ _dye_buffer = ti.Vector.field(3, float, shape=(res, res, res))
 _new_dye_buffer = ti.Vector.field(3, float, shape=(res, res, res))
 _density_color = ti.field(float, shape=(res, res, res))
 
-src = ti.Vector([res / 2, res / 2, res / 16])
-dir = ti.Vector([0, 0, 1])
+src = ti.Vector([res / 2, res / 16, res / 2])
+dir = ti.Vector([0, 1, 0])
 sphere_center = ti.Vector([res / 2, res / 2, res / 2])
 sphere_radius = res / 4
 
@@ -131,7 +131,7 @@ def advect(vf: ti.template(), qf: ti.template(), new_qf: ti.template()):
 
 @ti.kernel
 def apply_impulse(vf: ti.template(), dyef: ti.template()):
-    g_dir = -ti.Vector([0, 0, -9.8]) * 300
+    g_dir = -ti.Vector([0, -9.8, 0]) * 300
     for i, j, k in vf:
         omx, omy, omz = src
         mdir = dir
@@ -199,8 +199,7 @@ def pressure_jacobi(pf: ti.template(), new_pf: ti.template()):
         #
         norm = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center).norm()
         dir = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center) / norm
-        if norm > sphere_radius:
-            new_pf[i, j, k] = (pl + pr + pb + pt + pzf + pzb - div) * (1 / 6)
+        new_pf[i, j, k] = (pl + pr + pb + pt + pzf + pzb - div) * (1 / 6)
 
 
         # print(new_pf[i, j, k], velocity_divs[i, j, k])
@@ -230,15 +229,15 @@ def apply_pressure(p_in: ti.types.ndarray(), p_out: ti.template()):
         p_out[I] = p_in[I[0] * res + I[1]]
 
 
-# @ti.kernel
-# def apply_boundary_condition(vf: ti.template(), df: ti.template()):
-#     for i, j, k in vf:
-#
-#         norm = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center).norm()
-#         dir = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center) / norm
-#         if norm < sphere_radius:
-#             vf[i, j, k] = ti.Vector([0, 0, 0])
-#             df[i, j, k] = ti.Vector([0, 0, 0])
+@ti.kernel
+def apply_boundary_condition(vf: ti.template(), df: ti.template()):
+    for i, j, k in vf:
+
+        norm = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center).norm()
+        dir = (ti.Vector([i + 0.5, j + 0.5, k + 0.5]) - sphere_center) / norm
+        if norm < sphere_radius:
+            vf[i, j, k] = ti.Vector([0, 0, 0])
+            df[i, j, k] = ti.Vector([0, 0, 0])
 
 
 def solve_pressure_jacobi():
@@ -261,7 +260,7 @@ def step():
 
     solve_pressure_jacobi()
     subtract_gradient(velocities_pair.cur, pressures_pair.cur)
-    # apply_boundary_condition(velocities_pair.cur, dyes_pair.cur)
+    apply_boundary_condition(velocities_pair.cur, dyes_pair.cur)
 
 
 def reset():

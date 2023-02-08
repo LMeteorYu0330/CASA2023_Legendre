@@ -11,6 +11,7 @@ from vedo import Volume, show, Plotter
 from vedo.applications import RayCastPlotter
 
 import taichi as ti
+import exporter
 
 # How to run:
 #   `python stable_fluid.py`: use the jacobi iteration to solve the linear system.
@@ -40,28 +41,21 @@ paused = False
 # domain_length = 1
 # dx = 1/res
 
-legendre_n = 32
+legendre_n = 25
 legendre_x_res = 64
 legendre_dx = 2. / legendre_x_res
-legendre_fit_iter = 500
+legendre_fit_iter = 1500
 legendre_fit_learning_rate = 7e-6
-is_first_step = True
+frame = 0
+target_frame = 300
 ti.init(arch=ti.gpu, device_memory_fraction=0.9)
 # ti.init(device_memory_GB=4)
 print('Using jacobi iteration')
 
 legendre_table = ti.field(float, shape=(legendre_n, legendre_x_res + 1))
 alpha_x = ti.field(float, shape=(legendre_n, legendre_n, legendre_n))
-alpha_y = ti.field(float, shape=(legendre_n, legendre_n, legendre_n))
-alpha_z = ti.field(float, shape=(legendre_n, legendre_n, legendre_n))
 
-vel_diff_x = ti.field(float, shape=(res, res, res))
-vel_diff_y = ti.field(float, shape=(res, res, res))
-vel_diff_z = ti.field(float, shape=(res, res, res))
-
-grad_alpha_x = ti.field(float, shape=(legendre_n, legendre_n, legendre_n))
-grad_alpha_y = ti.field(float, shape=(legendre_n, legendre_n, legendre_n))
-grad_alpha_z = ti.field(float, shape=(legendre_n, legendre_n, legendre_n))
+rho_diff = ti.field(float, shape=(res, res, res))
 
 _velocities = ti.Vector.field(3, float, shape=(res, res, res))
 _new_velocities = ti.Vector.field(3, float, shape=(res, res, res))
@@ -72,9 +66,10 @@ _new_pressures = ti.field(float, shape=(res, res, res))
 _dye_buffer = ti.Vector.field(3, float, shape=(res, res, res))
 _new_dye_buffer = ti.Vector.field(3, float, shape=(res, res, res))
 _density_color = ti.field(float, shape=(res, res, res))
+current_legendre_density_color = ti.field(float, shape=(res, res, res))
 
 src = ti.Vector([res / 2, 5, 5])
-dir = ti.Vector([0, 1, 0])
+dir = ti.Vector([0, 0, 1])
 
 
 class TexPair:
@@ -90,10 +85,6 @@ velocities_pair = TexPair(_velocities, _new_velocities)
 pressures_pair = TexPair(_pressures, _new_pressures)
 dyes_pair = TexPair(_dye_buffer, _new_dye_buffer)
 
-
-# @ti.func
-# def isnan(x):
-#     return not (x < 0 or 0 < x or x == 0)
 
 @ti.func
 def sample(qf, u, v, w):
@@ -151,7 +142,7 @@ def advect(vf: ti.template(), qf: ti.template(), new_qf: ti.template()):
 
 @ti.kernel
 def apply_impulse(vf: ti.template(), dyef: ti.template()):
-    g_dir = -ti.Vector([0, 0, -9.8]) * 300
+    g_dir = -ti.Vector([0, -9.8, 0]) * 300
     for i, j, k in vf:
         omx, omy, omz = src
         mdir = dir
@@ -242,68 +233,68 @@ def apply_pressure(p_in: ti.types.ndarray(), p_out: ti.template()):
 
 @ti.kernel
 def fitting_alpha():
-    for i, j, k in velocities_pair.cur:
-        ux, uy, uz = velocities_pair.cur[i, j, k]
-        vel_x = 0.0
-        vel_y = 0.0
-        vel_z = 0.0
+    for i, j, k in _density_color:
+        rho = _density_color[i, j, k]
+        rho_x = 0.0
+
         for m, n, o in ti.ndrange(legendre_n, legendre_n, legendre_n):
             PxPyPz = legendre_table[m, i] * legendre_table[n, j] * legendre_table[o, k]
-            vel_x += alpha_x[m, n, o] * PxPyPz
-            vel_y += alpha_y[m, n, o] * PxPyPz
-            vel_z += alpha_z[m, n, o] * PxPyPz
+            rho_x += alpha_x[m, n, o] * PxPyPz
 
-        vel_diff_x[i, j, k] = ux - vel_x
-        vel_diff_y[i, j, k] = uy - vel_y
-        vel_diff_z[i, j, k] = uz - vel_z
+        rho_diff[i, j, k] = rho - rho_x
 
     for m, n, o in ti.ndrange(legendre_n, legendre_n, legendre_n):
         m_step = 0.0
-        n_step = 0.0
-        o_step = 0.0
+
         for i, j, k in ti.ndrange(res, res, res):
             PxPyPz = legendre_table[m, i] * legendre_table[n, j] * legendre_table[o, k]
-            m_step += PxPyPz * vel_diff_x[i, j, k]
-            n_step += PxPyPz * vel_diff_y[i, j, k]
-            o_step += PxPyPz * vel_diff_z[i, j, k]
+            m_step += PxPyPz * rho_diff[i, j, k]
 
         alpha_x[m, n, o] += legendre_fit_learning_rate * m_step
-        alpha_y[m, n, o] += legendre_fit_learning_rate * n_step
-        alpha_z[m, n, o] += legendre_fit_learning_rate * o_step
 
 
+# @ti.kernel
+# def calculateRMS() -> ti.float32:
+#     rms = 0.0
+#
+#     for i, j, k in velocities_pair.cur:
+#         ux, uy, uz = velocities_pair.cur[i, j, k]
+#         u_prime_x = 0.0
+#         u_prime_y = 0.0
+#         u_prime_z = 0.0
+#         for m, n, o in ti.ndrange(legendre_n, legendre_n, legendre_n):
+#             PxPyPz = legendre_table[m, i] * legendre_table[n, j] * legendre_table[o, k]
+#             u_prime_x += alpha_x[m, n, o] * PxPyPz
+#             u_prime_y += alpha_y[m, n, o] * PxPyPz
+#             u_prime_z += alpha_z[m, n, o] * PxPyPz
+#         rms += (ux - u_prime_x) ** 2 + (uy - u_prime_y) ** 2 + (uz - u_prime_z) ** 2
+#
+#     return ti.sqrt(rms / (res ** 3))
 @ti.kernel
-def calculateRMS() -> ti.float32:
+def calculateRMSDensity() -> ti.float32:
     rms = 0.0
 
-    for i, j, k in velocities_pair.cur:
-        ux, uy, uz = velocities_pair.cur[i, j, k]
-        u_prime_x = 0.0
-        u_prime_y = 0.0
-        u_prime_z = 0.0
-        for m, n, o in ti.ndrange(legendre_n, legendre_n, legendre_n):
-            PxPyPz = legendre_table[m, i] * legendre_table[n, j] * legendre_table[o, k]
-            u_prime_x += alpha_x[m, n, o] * PxPyPz
-            u_prime_y += alpha_y[m, n, o] * PxPyPz
-            u_prime_z += alpha_z[m, n, o] * PxPyPz
-        rms += (ux - u_prime_x) ** 2 + (uy - u_prime_y) ** 2 + (uz - u_prime_z) ** 2
+    for i, j, k in _density_color:
+        rho = _density_color[i, j, k]
+        rho_x = current_legendre_density_color[i, j, k]
+        rms += (rho - rho_x) ** 2
 
     return ti.sqrt(rms / (res ** 3))
 
 
-@ti.kernel
-def printu_u_prime():
-    for i, j, k in velocities_pair.cur:
-        ux, uy, uz = velocities_pair.cur[i, j, k]
-        u_prime_x = 0.0
-        u_prime_y = 0.0
-        u_prime_z = 0.0
-        for m, n, o in ti.ndrange(legendre_n, legendre_n, legendre_n):
-            PxPyPz = legendre_table[m, i] * legendre_table[n, j] * legendre_table[o, k]
-            u_prime_x += alpha_x[m, n, o] * PxPyPz
-            u_prime_y += alpha_y[m, n, o] * PxPyPz
-            u_prime_z += alpha_z[m, n, o] * PxPyPz
-        print("u: ", ux, uy, uz, "u_prime: ", u_prime_x, u_prime_y, u_prime_z)
+# @ti.kernel
+# def printu_u_prime():
+#     for i, j, k in velocities_pair.cur:
+#         ux, uy, uz = velocities_pair.cur[i, j, k]
+#         u_prime_x = 0.0
+#         u_prime_y = 0.0
+#         u_prime_z = 0.0
+#         for m, n, o in ti.ndrange(legendre_n, legendre_n, legendre_n):
+#             PxPyPz = legendre_table[m, i] * legendre_table[n, j] * legendre_table[o, k]
+#             u_prime_x += alpha_x[m, n, o] * PxPyPz
+#             u_prime_y += alpha_y[m, n, o] * PxPyPz
+#             u_prime_z += alpha_z[m, n, o] * PxPyPz
+#         print("u: ", ux, uy, uz, "u_prime: ", u_prime_x, u_prime_y, u_prime_z)
 
 
 # @ti.kernel
@@ -340,7 +331,6 @@ def solve_pressure_jacobi():
 
 
 def step():
-
     # replace_velocity_field()
     advect(velocities_pair.cur, velocities_pair.cur, velocities_pair.nxt)
     advect(velocities_pair.cur, dyes_pair.cur, dyes_pair.nxt)
@@ -355,53 +345,71 @@ def step():
 
     solve_pressure_jacobi()
     subtract_gradient(velocities_pair.cur, pressures_pair.cur)
-    global is_first_step
-    global legendre_fit_iter
-    if is_first_step:
-        legendre_fit_iter = 10
-        is_first_step = False
 
 
 def reset():
     velocities_pair.cur.fill(0)
     pressures_pair.cur.fill(0)
     alpha_x.fill(0)
-    alpha_y.fill(0)
-    alpha_z.fill(0)
-    grad_alpha_x.fill(0)
-    grad_alpha_y.fill(0)
-    grad_alpha_z.fill(0)
+    # alpha_y.fill(0)
+    # alpha_z.fill(0)
+    # grad_alpha_x.fill(0)
+    # grad_alpha_y.fill(0)
+    # grad_alpha_z.fill(0)
     legendre_table.fill(0)
     dyes_pair.cur.fill(0)
     _density_color.fill(0)
+    current_legendre_density_color.fill(0)
 
 
-def fillnumpy():
-    arr = vol.tonumpy()
-    arr[:] = _density_color.to_numpy()
-    print("fill")
-    vol.mode(0).c('cool').alpha(0.02)
-    vol.imagedata().GetPointData().GetScalars().Modified()
+@ti.kernel
+def make_legendre_density():
+    for i, j, k in current_legendre_density_color:
+        current_legendre_density_color[i, j, k] = 0.0
+        for m, n, o in ti.ndrange(legendre_n, legendre_n, legendre_n):
+            PxPyPz = legendre_table[m, i] * legendre_table[n, j] * legendre_table[o, k]
+            current_legendre_density_color[i, j, k] += alpha_x[m, n, o] * PxPyPz
 
 
-def on_key_press(evt):
+# def fillnumpy():
+#     arr = vol.tonumpy()
+#     arr[:] = _density_color.to_numpy()
+#     print("fill")
+#     vol.mode(0).c('cool').alpha(0.02)
+#     vol.imagedata().GetPointData().GetScalars().Modified()
+
+def step_one_frame(evt):
+    global frame
+    print("step: ", frame)
     step()
     ti.sync()
-    fillnumpy()
+    # fillnumpy()
     for iter in range(legendre_fit_iter):
         fitting_alpha()
+    print("alpha fitted")
+    make_legendre_density()
+    print(calculateRMSDensity())
+    exporter.makeVol(res, _density_color.to_numpy(),
+                     "Z:\TeamFolder\CASA2023_Legendre\shared\Scene1\Lground_truth\Scene1_" + str(
+                         frame).zfill(4) + ".vol")
+    exporter.makeVol(res, current_legendre_density_color.to_numpy(),
+                     "Z:\TeamFolder\CASA2023_Legendre\shared\Scene1\Legendre_volume_sequence\Scene1_" + str(
+                         frame).zfill(4) + ".vol")
+    frame += 1
 
 
 reset()
 calculateLegendrePolynomial()
-vol = Volume(np.zeros_like(_density_color.to_numpy())).mode(0).c('cool').alpha(0.02)  # change properties
-plt = RayCastPlotter(vol, bg='white', bg2='blackboard', axes=7)  # Plotter instance
-plt.add_callback("KeyPress", on_key_press)
-fillnumpy()
+# vol = Volume(np.zeros_like(_density_color.to_numpy())).mode(0).c('cool').alpha(0.02)  # change properties
+# plt = RayCastPlotter(vol, bg='white', bg2='blackboard', axes=7)  # Plotter instance
+# plt.add_callback("KeyPress", step_one_frame)
+# fillnumpy()
 
-plt.show(viewup="z")
-plt.interactive().close()
+# plt.show(viewup="z")
+# plt.interactive().close()
 
-print("alpha finished")
-printu_u_prime()
-print(calculateRMS())
+for i in range(target_frame):
+    step_one_frame(0)
+
+# printu_u_prime()
+# print(calculateRMS())
